@@ -1,37 +1,100 @@
-# caffine-demo
+# caffine 基础使用步骤
+
 
 #### 介绍
 caffine 本地缓存应用实践
 
-#### 软件架构
-软件架构说明
+#### 基础操作步骤
+1、创建依赖
+<dependency>
+    <groupId>com.github.ben-manes.caffeine</groupId>
+    <artifactId>caffeine</artifactId>
+    <version>2.9.3</version>
+</dependency>
+<dependency>
+    <groupId>org.aspectj</groupId>
+    <artifactId>aspectjweaver</artifactId>
+</dependency>
+<dependency>
+    <groupId>cn.hutool</groupId>
+    <artifactId>hutool-all</artifactId>
+    <version>5.5.7</version>
+</dependency>
 
 
-#### 安装教程
+2、配置cacheManager(注册cache)
+@Bean
+    public AbstractCacheManager cacheManager() {
+        SimpleCacheManager cacheManager = new SimpleCacheManager();
+        //把各个cache注册到cacheManager中，CaffeineCache实现了org.springframework.cache.Cache接口
+        List<CaffeineCache> caches = new ArrayList<>();
+        Arrays.asList(CacheInstance.values()).forEach(cacheInstance -> {
+            CaffeineCache caffeineCache = new CaffeineCache(cacheInstance.name(), Caffeine.newBuilder()
+                    .recordStats()
+                    .expireAfterWrite(cacheInstance.getTtl(), TimeUnit.SECONDS)
+                    .build());
+            caches.add(caffeineCache);
+        });
+        cacheManager.setCaches(caches);
+        return cacheManager;
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+    }
 
-#### 使用说明
-
-1.  xxxx
-2.  xxxx
-3.  xxxx
-
-#### 参与贡献
-
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
+    @Bean
+    public SimpleKeyGenerator simpleKeyGenerator() {
+        return new SimpleKeyGenerator();
+    }
+3、创建缓存代理类（CacheCreator代替cacheManager获取缓存和刷选）
+根据业务cache名称和前缀来做缓存业务处理
 
 
-#### 特技
+ @Autowired
+    private AbstractCacheManager cacheManager;
+/**
+     * 获取缓存，如果获取不到创建一个
+     *
+     * @param cacheInstance
+     * @param values
+     * @return
+     */
+    public Cache getCache(CacheInstance cacheInstance, List<String> values) {
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+        String cacheNameSuffix = String.join("&", values);
+        String cacheName = cacheInstance.name() + "&" + cacheNameSuffix;
+        Cache cache = cacheManager.getCache(cacheName);
+        if (null == cache) {
+            synchronized (cacheName.intern()) {
+                cache = new CaffeineCache(cacheName, Caffeine.newBuilder()
+                        .recordStats()
+                        .expireAfterWrite(cacheInstance.getTtl(), TimeUnit.SECONDS)
+                        .build());
+                Map<String, Cache> caches = (ConcurrentHashMap<String, Cache>) ReflectUtil.getFieldValue(cacheManager, "cacheMap");
+                caches.put(cacheName, cache);
+            }
+        }
+        return cache;
+    }
+
+4、创建业务数据进行区分的缓存枚举类
+CacheInstance 
+
+5、注解
+将所有参数作为缓存key, 无需配置keys
+@Cacheable(cacheName = CacheInstance.STUDENT_INFO,  //枚举类存放的缓存名
+           cacheNameSuffix = "selectStudentList")
+情况2:部分参数作为缓存key, 配置keys
+@Cacheable(cacheName = CacheInstance.STUDENT_INFO,  //枚举类存放的缓存名
+           cacheNameSuffix = "selectStudentList",	//缓存前缀, 对这部分缓存的唯一标识, 这里可以使用方法名, 方便查找和删除
+           keys= {"conditon"})	
+
+6、缓存切面
+针对获取缓存和删除缓存的标有业务枚举类的cachename业务处理	
+
+
+7、redis+caffeine（基于java8的高性能缓存库）的高性能缓存方案
+  （1）、首先查询caffenine二级缓存有没有数据，如果有直接返回，相反直接走下一步
+   （2）、查询一级缓存redis，如果有直接返回，相反直接走下一步
+   （3）、查询数据库信息，并针对redis缓存信息保存，然后更新本机caffenine缓存信息，并sub/pub通知其他caffenine节点清楚缓存信息,一旦二级缓存信息不存在，则直接从一级缓存（redis）
+加载数据。极端情况下，可以设置caffenine缓存的有效期（即便未能及时更新， 也只是短暂影响）后续会接入专业的消息队列来保障消息的可靠性。
+
+
